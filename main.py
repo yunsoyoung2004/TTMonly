@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Literal, List, Optional
 import json, os, asyncio, time, re
 
@@ -30,7 +30,9 @@ class AgentState(BaseModel):
     response: str
     history: List[str]
     turn: Optional[int] = 0
+    preset_questions: List[str] = Field(default_factory=list)
 
+# ✅ 모델 경로 상태
 model_ready = False
 model_paths = {}
 
@@ -68,6 +70,11 @@ async def chat_stream(request: Request):
     try:
         data = await request.json()
         incoming_state = data.get("state", {})
+
+        # ✅ preset_questions 필드 누락 시 기본값 삽입
+        if "preset_questions" not in incoming_state:
+            incoming_state["preset_questions"] = []
+
         state = AgentState(**incoming_state)
         print(f"\n🟢 [입력] STAGE={state.stage.upper()}, TURN={state.turn}, Q='{state.question.strip()}'", flush=True)
     except Exception as e:
@@ -77,7 +84,8 @@ async def chat_stream(request: Request):
                 "next_stage": "empathy",
                 "response": "입력 상태가 잘못되었습니다. 다시 시도해 주세요.",
                 "turn": 0,
-                "history": []
+                "history": [],
+                "preset_questions": []
             }, ensure_ascii=False).encode("utf-8")
         ]), media_type="text/plain")
 
@@ -134,6 +142,7 @@ async def chat_stream(request: Request):
                 state.turn = result.get("turn", 0)
                 state.history = result.get("history", [])
                 state.response = result.get("response", "")
+                state.preset_questions = result.get("preset_questions", [])
                 print(f"🔁 [다음 단계] {next_stage.upper()} / 턴: {state.turn}", flush=True)
             except Exception as e:
                 print(f"⚠️ [전이 파싱 실패] {e}", flush=True)
@@ -146,7 +155,8 @@ async def chat_stream(request: Request):
             "next_stage": next_stage,
             "response": state.response.strip() or "답변 생성 실패",
             "turn": state.turn,
-            "history": state.history
+            "history": state.history,
+            "preset_questions": state.preset_questions
         }, ensure_ascii=False).encode("utf-8")
 
     return StreamingResponse(async_gen(), media_type="text/plain")
