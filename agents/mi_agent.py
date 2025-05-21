@@ -39,7 +39,6 @@ class AgentState(BaseModel):
     question: str
     response: str
     history: List[str]
-    intro_shown: bool = True
 
 def get_mi_prompt() -> str:
     return (
@@ -54,26 +53,13 @@ def get_mi_prompt() -> str:
 async def stream_mi_reply(state: AgentState, model_path: str) -> AsyncGenerator[bytes, None]:
     user_input = state.question.strip()
 
-    # ✅ 인트로 출력 (초기 진입 시)
-    if not state.intro_shown:
-        intro = "우선 지금 이 자리에 와주셔서 감사합니다. 어떤 이야기를 나누고 싶으신가요?"
-        yield intro.encode("utf-8")
-        yield b"\n---END_STAGE---\n" + json.dumps({
-            "next_stage": "mi",
-            "response": intro,
-            "history": state.history + [intro],
-            "intro_shown": True
-        }, ensure_ascii=False).encode("utf-8")
-        return
-
     if not user_input or len(user_input) < 2:
         fallback = "조금 더 구체적으로 말씀해주실 수 있을까요?"
         yield fallback.encode("utf-8")
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": "mi",
             "response": fallback,
-            "history": state.history + [user_input, fallback],
-            "intro_shown": True
+            "history": state.history + [user_input, fallback]
         }, ensure_ascii=False).encode("utf-8")
         return
 
@@ -98,15 +84,13 @@ async def stream_mi_reply(state: AgentState, model_path: str) -> AsyncGenerator[
 
         reply = full_response.strip() or "괜찮아요. 마음을 천천히 들려주셔도 괜찮습니다."
 
-        # ✅ 5턴 이상이면 CBT1으로 전환
         turn_count = len(state.history) // 2
         next_stage = "cbt1" if turn_count + 1 >= 5 else "mi"
 
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": next_stage,
             "response": reply,
-            "history": state.history + [user_input, reply],
-            "intro_shown": True
+            "history": state.history + [user_input, reply]
         }, ensure_ascii=False).encode("utf-8")
 
     except Exception as e:
@@ -116,6 +100,5 @@ async def stream_mi_reply(state: AgentState, model_path: str) -> AsyncGenerator[
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": "mi",
             "response": fallback,
-            "history": state.history + [user_input],
-            "intro_shown": True
+            "history": state.history + [user_input]
         }, ensure_ascii=False).encode("utf-8")

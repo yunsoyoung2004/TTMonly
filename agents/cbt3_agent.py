@@ -12,7 +12,7 @@ def load_cbt3_model(model_path: str) -> Llama:
         NUM_THREADS = max(1, multiprocessing.cpu_count() - 1)
         LLM_CBT3_INSTANCE[model_path] = Llama(
             model_path=model_path,
-            n_ctx=2048,  # ✅ context window 확장
+            n_ctx=2048,
             n_threads=NUM_THREADS,
             n_batch=8,
             max_tokens=128,
@@ -31,7 +31,6 @@ def load_cbt3_model(model_path: str) -> Llama:
         print(f"✅ CBT3 모델 로딩 완료: {model_path}", flush=True)
     return LLM_CBT3_INSTANCE[model_path]
 
-# ✅ 상태 정의
 class AgentState(BaseModel):
     stage: Literal["cbt3", "end"]
     question: str
@@ -39,11 +38,9 @@ class AgentState(BaseModel):
     history: List[str]
     turn: int
 
-# ✅ CBT3 응답 함수
 async def stream_cbt3_reply(state: AgentState, model_path: str) -> AsyncGenerator[bytes, None]:
     user_input = state.question.strip()
 
-    # ✅ 무의미한 입력 걸러내기
     if len(user_input) < 2 or re.fullmatch(r"[ㅋㅎ]+", user_input):
         fallback = "조금 더 구체적으로 말씀해주실 수 있을까요?"
         yield fallback.encode("utf-8")
@@ -52,14 +49,16 @@ async def stream_cbt3_reply(state: AgentState, model_path: str) -> AsyncGenerato
     try:
         llm = load_cbt3_model(model_path)
 
-        # ✅ 시스템 프롬프트
         system_prompt = (
             "너는 따뜻하고 논리적인 CBT 상담자야.\n"
-            "- 사용자의 목표나 상황에 맞춰 실천 행동을 도와주는 역할이야.\n"
-            "- 반드시 **하나의 질문만** 포함하고, 전체는 2~3문장 구성으로 말해줘.\n"
-            "- 단정적인 말투 대신 열린 질문으로 유도해.\n"
-            "- 방해 요소, 감정 변화, 피드백, 환경 설정, 습관 형성 등 다양한 주제를 활용해.\n"
-            "- 같은 문장 구조, 말투, 표현 반복 금지.\n"
+            "너의 목표는 사용자의 상황에 맞는 **실행 가능한 행동 한 가지**를 유도하는 질문을 제시하는 거야.\n"
+            "- 반드시 질문은 하나만 해. 하나 이상 하면 안 돼.\n"
+            "- 총 응답은 2~3문장 이내여야 해.\n"
+            "- 항상 열린 질문으로 마무리하고, 질문 앞에 설명이 오면 안 돼.\n"
+            "- 다음 주제 중 한 가지를 선택해 질문해: 방해 요인, 감정 변화, 습관 형성, 환경 조정, 피드백 실천 등.\n"
+            "- 같은 질문 구조나 어미, 말투를 반복하지 마. 매 응답은 다르게.\n"
+            "- 예시 (금지된 형태): '무엇이 도움이 될까요? 어떤 계획이 좋을까요?'\n"
+            "- 예시 (허용된 형태): '어떤 방식으로 시작할 수 있을까요?'"
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -69,7 +68,6 @@ async def stream_cbt3_reply(state: AgentState, model_path: str) -> AsyncGenerato
                 messages.append({"role": "assistant", "content": state.history[i + 1]})
         messages.append({"role": "user", "content": user_input})
 
-        # ✅ 스트리밍 생성
         full_response = ""
         first_token_sent = False
         for chunk in llm.create_chat_completion(messages=messages, stream=True):
@@ -82,6 +80,11 @@ async def stream_cbt3_reply(state: AgentState, model_path: str) -> AsyncGenerato
                 yield token.encode("utf-8")
 
         reply = full_response.strip() or "괜찮아요. 지금 떠오르는 작은 아이디어라도 함께 나눠볼 수 있어요."
+
+        # ✅ 질문이 여러 개일 경우 첫 질문만 유지
+        questions = re.findall(r"[^.!?]*\?", reply)
+        if len(questions) > 1:
+            reply = questions[0].strip()
 
         # ✅ 유사 응답 회피
         for past in state.history[-10:]:
@@ -109,3 +112,4 @@ async def stream_cbt3_reply(state: AgentState, model_path: str) -> AsyncGenerato
         print(f"⚠️ CBT3 오류: {e}", flush=True)
         fallback = "죄송해요. 지금은 잠시 오류가 발생했어요. 다시 이야기해 주시겠어요?"
         yield fallback.encode("utf-8")
+

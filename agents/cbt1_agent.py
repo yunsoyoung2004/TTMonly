@@ -9,7 +9,7 @@ LLM_CBT1_INSTANCE = {}
 def load_cbt1_model(model_path: str) -> Llama:
     global LLM_CBT1_INSTANCE
     if model_path not in LLM_CBT1_INSTANCE:
-        print("🚀 CBT1 모델 로딩 중:", model_path, flush=True)
+        print(f"📦 CBT1 모델 로딩: {model_path}", flush=True)
         NUM_THREADS = max(1, multiprocessing.cpu_count() - 1)
         LLM_CBT1_INSTANCE[model_path] = Llama(
             model_path=model_path,
@@ -17,11 +17,11 @@ def load_cbt1_model(model_path: str) -> Llama:
             n_threads=NUM_THREADS,
             n_batch=8,
             max_tokens=128,
-            temperature=0.85,
-            top_p=0.95,
-            presence_penalty=1.2,
-            frequency_penalty=1.0,
-            repeat_penalty=1.2,
+            temperature=0.95,           # ✅ 다양성 향상
+            top_p=0.92,                # ✅ 생성 분포 조절
+            presence_penalty=1.4,      # ✅ 새로운 내용 유도
+            frequency_penalty=1.2,     # ✅ 표현 반복 억제
+            repeat_penalty=1.3,        # ✅ 구조 반복 억제
             n_gpu_layers=0,
             low_vram=True,
             use_mlock=False,
@@ -31,7 +31,8 @@ def load_cbt1_model(model_path: str) -> Llama:
         )
     return LLM_CBT1_INSTANCE[model_path]
 
-# ✅ 상태 모델 정의
+
+# ✅ 상태 모델
 class AgentState(BaseModel):
     stage: Literal["cbt1", "cbt2"]
     question: str
@@ -39,10 +40,12 @@ class AgentState(BaseModel):
     history: List[str]
     turn: int
 
-# ✅ CBT1 응답 함수
+# ✅ CBT1 응답 스트리밍 함수
 async def stream_cbt1_reply(state: AgentState, model_path: str) -> AsyncGenerator[bytes, None]:
     user_input = state.question.strip()
     history = state.history or []
+
+    print(f"🧠 [CBT1 현재 턴: {state.turn}]")  # ✅ 간결한 디버깅 출력
 
     if not user_input:
         fallback = "떠오른 생각이나 감정이 있다면 편하게 이야기해 주세요."
@@ -86,18 +89,16 @@ async def stream_cbt1_reply(state: AgentState, model_path: str) -> AsyncGenerato
                     first_token_sent = True
                 yield token.encode("utf-8")
 
-        reply = full_response.strip()
-        if not reply:
-            reply = "좋아요. 조금 더 구체적으로 이야기해주실 수 있을까요?"
+        reply = full_response.strip() or "좋아요. 조금 더 구체적으로 이야기해주실 수 있을까요?"
 
-        # ✅ 유사 응답 회피
+        # ✅ 반복 회피
         for past in history[-10:]:
             if isinstance(past, str):
-                similarity = difflib.SequenceMatcher(None, reply[:40], past[:40]).ratio()
-                if similarity > 0.8:
-                    reply += " 이번에는 조금 더 새로운 각도에서 질문해봤어요."
+                if difflib.SequenceMatcher(None, reply[:40], past[:40]).ratio() > 0.8:
+                    reply += " 이번에는 조금 더 새로운 시각으로 질문해봤어요."
                     break
 
+        # ✅ 상태 전이
         next_turn = state.turn + 1
         next_stage = "cbt2" if next_turn >= 5 else "cbt1"
 
