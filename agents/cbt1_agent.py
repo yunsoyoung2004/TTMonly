@@ -95,7 +95,7 @@ async def stream_cbt1_reply(state: AgentState, model_path: str) -> AsyncGenerato
         for past in history[-10:]:
             if isinstance(past, str):
                 if difflib.SequenceMatcher(None, reply[:40], past[:40]).ratio() > 0.8:
-                    reply += " 이번에는 조금 더 새로운 시각으로 질문해봤어요."
+                    reply += " 그랬군요, 그게 정말 사실일까요? 왜곡되지는 않았나요?"
                     break
 
         # ✅ 상태 전이

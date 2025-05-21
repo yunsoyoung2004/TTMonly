@@ -1,8 +1,9 @@
-import os, json, multiprocessing, difflib, random, re
+import os, json, multiprocessing, difflib, re, asyncio
 from typing import AsyncGenerator, List
 from pydantic import BaseModel
 from llama_cpp import Llama
 
+# ✅ 모델 캐시
 LLM_CBT2_INSTANCE = {}
 
 def load_cbt2_model(model_path: str) -> Llama:
@@ -23,7 +24,7 @@ def load_cbt2_model(model_path: str) -> Llama:
             use_mlock=False,
             verbose=False,
             chat_format="llama-3",
-            stop=["<|im_end|>", "\n\n"]
+            stop=["<|im_end|>", "---END_STAGE---"]
         )
     return LLM_CBT2_INSTANCE[model_path]
 
@@ -33,16 +34,17 @@ class AgentState(BaseModel):
     history: List[str]
     turn: int
 
+# ✅ 시스템 프롬프트
 def get_cbt2_prompt() -> str:
     return (
-        "너는 인지 재구조화를 도와주는 전문 CBT 상담자야.\n"
-        "사용자의 감정과 자동사고를 경청하고, 그 생각을 탐색할 수 있는 하나의 질문만 해.\n"
-        "- 질문은 따뜻하고 진심 어린 어조로, 다양한 표현과 주제를 순환하면서 던지세요.\n"
-        "- 반드시 하나의 질문만 해주세요.\n"
-        "- 사용자의 말을 반복하거나 흉내 내지 마세요.\n"
-        "- 같은 문장을 반복하지 마세요."
+        "너는 인지 재구조화를 도와주는 따뜻한 CBT 상담자야.\n"
+        "사용자의 자동사고를 잘 이해하고, 그것을 탐색할 수 있도록 질문을 하나만 해줘.\n"
+        "- 반드시 질문은 하나만 해주세요.\n"
+        "- 사용자의 말을 반복하거나 흉내내지 마세요.\n"
+        "- 같은 문장을 반복하지 말고, 다양한 표현을 사용하세요."
     )
 
+# ✅ 중복 질문 필터링
 def is_similar_to_past_response(reply: str, history: List[str]) -> bool:
     recent_responses = [h for i, h in enumerate(history[-10:]) if i % 2 == 1]
     for past in recent_responses:
@@ -55,60 +57,85 @@ def contains_user_echo(reply: str, user_input: str) -> bool:
     norm = lambda s: re.sub(r'\s+', '', s.lower())
     return norm(user_input) in norm(reply)
 
+# ✅ 스트리밍 응답 함수
 async def stream_cbt2_reply(state: AgentState, model_path: str) -> AsyncGenerator[bytes, None]:
     user_input = state.question.strip()
-    if len(user_input) < 2 or re.fullmatch(r"[ㅋㅎㅠㅜ]+", user_input):
-        yield "조금 더 구체적으로 이야기해주실 수 있을까요?".encode("utf-8")
+    history = state.history if state.turn > 0 else []
+
+    if not user_input or re.fullmatch(r"[ㅋㅎㅠㅜ]+", user_input):
+        fallback = "조금 더 구체적으로 이야기해주실 수 있을까요?"
+        yield fallback.encode("utf-8")
+        yield b"\n---END_STAGE---\n" + json.dumps({
+            "next_stage": "cbt2",
+            "turn": state.turn,
+            "response": fallback,
+            "question": "",
+            "history": history
+        }, ensure_ascii=False).encode("utf-8")
         return
 
     try:
         llm = load_cbt2_model(model_path)
+        system_prompt = get_cbt2_prompt()
 
-        messages = [{"role": "system", "content": get_cbt2_prompt()}]
-        for i in range(max(0, len(state.history) - 10), len(state.history), 2):
-            if i + 1 < len(state.history):
-                messages.append({"role": "user", "content": state.history[i]})
-                messages.append({"role": "assistant", "content": state.history[i + 1]})
+        # ✅ 메시지 구성
+        messages = [{"role": "system", "content": system_prompt}]
+        for i in range(0, len(history), 2):
+            if i + 1 < len(history):
+                messages.append({"role": "user", "content": history[i]})
+                messages.append({"role": "assistant", "content": history[i + 1]})
         messages.append({"role": "user", "content": user_input})
 
-        attempt, max_attempts = 0, 3
-        final_response = ""
-        while attempt < max_attempts:
-            full_question = ""
-            for chunk in llm.create_chat_completion(messages=messages, stream=True):
-                token = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                if token:
-                    full_question += token
+        # ✅ 스트리밍 생성
+        full_response = ""
+        first_token_sent = False
+        for chunk in llm.create_chat_completion(messages=messages, stream=True):
+            await asyncio.sleep(0.015)
+            token = chunk["choices"][0]["delta"].get("content", "")
+            if token:
+                full_response += token
+                if not first_token_sent:
+                    yield b"\n"
+                    first_token_sent = True
+                yield token.encode("utf-8")
 
-            full_question = full_question.strip().rstrip("?.!。！？") + "?"
+        # ✅ 첫 문장 추출 및 보정
+        full_response = full_response.strip()
+        first_sentence = re.split(r"[.?!]", full_response)[0].strip()
+        if not first_sentence.endswith("?"):
+            first_sentence += "?"
 
-            if not is_similar_to_past_response(full_question, state.history) and not contains_user_echo(full_question, user_input):
-                final_response = full_question
-                break
-            attempt += 1
+        # ✅ 디버깅 문장 제거
+        first_sentence = first_sentence.replace("preset_questions", "").replace("{", "").replace("}", "")
 
-        # fallback: 최종적으로도 실패한 경우
-        if final_response == "":
-            final_response = "혹시 그 생각에 대해 다르게 바라볼 수 있는 시각이 있을까요?"
+        # ✅ 중복 보정
+        if is_similar_to_past_response(first_sentence, history) or contains_user_echo(first_sentence, user_input):
+            first_sentence += " 이 생각은 어디서 비롯된 걸까요?"
 
+        # ✅ 상태 업데이트
         next_turn = state.turn + 1
-        if next_turn >= 5:
-            next_stage = "cbt3"
-            next_turn = 0
-            updated_history = []
-        else:
-            next_stage = "cbt2"
-            updated_history = state.history + [user_input, final_response]
-
-        yield b"\n" + final_response.encode("utf-8")
+        next_stage = "cbt3" if next_turn >= 5 else "cbt2"
+        updated_history = history + [user_input, first_sentence]
 
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": next_stage,
-            "response": final_response,
-            "history": updated_history,
-            "turn": next_turn
+            "turn": 0 if next_stage == "cbt3" else next_turn,
+            "response": first_sentence,
+            "question": "",
+            "history": updated_history
         }, ensure_ascii=False).encode("utf-8")
 
     except Exception as e:
-        print(f"⚠️ CBT2 오류: {e}", flush=True)
-        yield "죄송해요. 다시 한 번 이야기해주실 수 있을까요?".encode("utf-8")
+        import traceback
+        traceback.print_exc()
+        fallback = "죄송해요. 다시 한 번 이야기해주시겠어요?"
+        for ch in fallback:
+            yield ch.encode("utf-8")
+            await asyncio.sleep(0.02)
+        yield b"\n---END_STAGE---\n" + json.dumps({
+            "next_stage": "cbt2",
+            "turn": state.turn,
+            "response": fallback,
+            "question": "",
+            "history": history
+        }, ensure_ascii=False).encode("utf-8")
