@@ -121,7 +121,7 @@ async def chat_stream(request: Request):
 
         if state.stage not in agent_streams:
             print(f"❌ [에러] 지원되지 않는 단계: {state.stage}", flush=True)
-            yield r"⚠️ 지원되지 않는 단계입니다.\n"
+            yield r"감사합니다! 모든 세션을 완료하셨습니다. 또 찾아주세요!\n"
             return
 
         try:
