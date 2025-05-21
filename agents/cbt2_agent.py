@@ -54,8 +54,22 @@ def get_cbt2_prompt() -> str:
 
 async def stream_cbt2_reply(state: AgentState, model_path: str) -> AsyncGenerator[bytes, None]:
     user_input = state.question.strip()
+    
+    # ✅ 최초 진입 시 인트로 출력
+    if not state.intro_shown:
+        intro = "이제부터는 떠오른 생각을 다양한 시각에서 다시 바라보는 연습을 해볼 거예요. 천천히 생각을 나눠 주세요."
+        yield intro.encode("utf-8")
+        yield b"\n---END_STAGE---\n" + json.dumps({
+            "next_stage": "cbt2",
+            "response": intro,
+            "history": state.history + [intro],
+            "turn": 0,
+            "intro_shown": True
+        }, ensure_ascii=False).encode("utf-8")
+        return
+
     if not user_input:
-        fallback = "조금 더 구체적으로 말씀해주실 수 있을까요?"
+        fallback = "조금 더 구체적으로 이야기해주실 수 있을까요?"
         yield fallback.encode("utf-8")
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": "cbt2",
@@ -68,6 +82,7 @@ async def stream_cbt2_reply(state: AgentState, model_path: str) -> AsyncGenerato
 
     try:
         llm = load_cbt2_model(model_path)
+
         messages = [{"role": "system", "content": get_cbt2_prompt()}]
         for i in range(max(0, len(state.history) - 10), len(state.history), 2):
             messages.append({"role": "user", "content": state.history[i]})
@@ -85,34 +100,34 @@ async def stream_cbt2_reply(state: AgentState, model_path: str) -> AsyncGenerato
                     first_token_sent = True
                 yield token.encode("utf-8")
 
-        # ✅ 리스트로 나오는 경우 문자열로 정리
-        if isinstance(full_response, list):
-            reply = " ".join(str(x) for x in full_response)
-        else:
-            reply = str(full_response).strip()
+        reply = full_response.strip() or "괜찮습니다. 천천히 생각을 정리해 말씀해주셔도 돼요."
 
-        # ✅ 유사 질문 회피: 최근 5개 assistant 응답과 비교
+        # ✅ 유사한 질문 회피
         for past in state.history[-10:]:
             if isinstance(past, str):
                 similarity = difflib.SequenceMatcher(None, reply[:30], past[:30]).ratio()
                 if similarity > 0.85:
-                    reply += " (이번에는 다른 방향으로 생각해볼 수 있도록 질문드려볼게요.)"
+                    reply += " 이번엔 조금 다른 방향에서 생각해볼 수 있도록 질문드렸어요."
                     break
 
-        # ✅ 5턴 이상이면 CBT3로 전환
-        next_stage = "cbt3" if state.turn + 1 >= 5 else "cbt2"
+        # ✅ 턴 수 기준 전환
+        next_turn = state.turn + 1
+        next_stage = "cbt3" if next_turn >= 5 else "cbt2"
+
+        if next_stage == "cbt3":
+            reply += "\n\n🧠 이제 생각을 재구성하는 CBT3 단계로 넘어갈 준비가 되었어요."
 
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": next_stage,
             "response": reply,
             "history": state.history + [user_input, reply],
-            "turn": state.turn + 1,
+            "turn": 0 if next_stage == "cbt3" else next_turn,
             "intro_shown": True
         }, ensure_ascii=False).encode("utf-8")
 
     except Exception as e:
         print(f"⚠️ CBT2 오류: {e}", flush=True)
-        fallback = "죄송합니다. 다시 말씀해 주실 수 있을까요?"
+        fallback = "죄송해요. 다시 한 번 이야기해주실 수 있을까요?"
         yield fallback.encode("utf-8")
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": "cbt2",
@@ -121,4 +136,3 @@ async def stream_cbt2_reply(state: AgentState, model_path: str) -> AsyncGenerato
             "turn": state.turn + 1,
             "intro_shown": True
         }, ensure_ascii=False).encode("utf-8")
-

@@ -1,4 +1,4 @@
-import os, json, multiprocessing
+import os, json, multiprocessing, difflib
 from typing import AsyncGenerator, Literal, List, Optional
 from pydantic import BaseModel
 from llama_cpp import Llama
@@ -47,7 +47,7 @@ class AgentState(BaseModel):
 async def stream_cbt3_reply(state: AgentState, model_path: str) -> AsyncGenerator[bytes, None]:
     user_input = state.question.strip()
 
-    # ✅ 처음 진입 시 턴을 0으로 초기화하고 도입 멘트 출력
+    # ✅ 인트로 출력
     if not state.intro_shown:
         intro = (
             "📘 이제 우리는 실천 계획을 세워볼 거예요. 지금까지 정리된 생각을 바탕으로, "
@@ -71,7 +71,7 @@ async def stream_cbt3_reply(state: AgentState, model_path: str) -> AsyncGenerato
             "next_stage": "cbt3",
             "turn": state.turn,
             "response": fallback,
-            "intro_shown": state.intro_shown,
+            "intro_shown": True,
             "awaiting_preparation_decision": False,
             "history": state.history
         }, ensure_ascii=False).encode("utf-8")
@@ -109,21 +109,24 @@ async def stream_cbt3_reply(state: AgentState, model_path: str) -> AsyncGenerato
                     first_token_sent = True
                 yield token.encode("utf-8")
 
-        reply = full_response.strip()
+        reply = full_response.strip() or "괜찮아요. 지금 떠오르는 작은 아이디어라도 함께 나눠볼 수 있어요."
 
-        # ✅ 중복 질문 회피 처리
-        last_replies = state.history[-10:]
-        if any(reply[:25] in past for past in last_replies if isinstance(past, str)):
-            reply += " (이번엔 다른 방식으로 질문드려볼게요.)"
+        # ✅ 유사 응답 회피
+        for past in state.history[-10:]:
+            if isinstance(past, str):
+                similarity = difflib.SequenceMatcher(None, reply[:30], past[:30]).ratio()
+                if similarity > 0.85:
+                    reply += " 이번에는 조금 다른 각도로 질문드렸어요."
+                    break
 
-        # ✅ 턴 수 증가 및 종료 조건 확인
+        # ✅ 5턴 후 종료
         next_turn = state.turn + 1
         is_ending = next_turn >= 5
         next_stage = "end" if is_ending else "cbt3"
         next_turn = 0 if is_ending else next_turn
 
         if is_ending:
-            reply += "\n\n🎯 계획을 잘 세워주셨어요. 이제 대화를 마무리할 시간이에요."
+            reply += "\n\n🎯 계획을 잘 세워주셨어요. 이제 오늘 대화를 마무리할게요."
 
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": next_stage,
@@ -135,9 +138,9 @@ async def stream_cbt3_reply(state: AgentState, model_path: str) -> AsyncGenerato
         }, ensure_ascii=False).encode("utf-8")
 
     except Exception as e:
-        err = f"⚠️ CBT3 응답 오류: {e}"
-        print(err, flush=True)
-        yield err.encode("utf-8")
+        print(f"⚠️ CBT3 응답 오류: {e}", flush=True)
+        fallback = "죄송해요. 다시 한 번 이야기해주시겠어요?"
+        yield fallback.encode("utf-8")
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": "end",
             "turn": 0,

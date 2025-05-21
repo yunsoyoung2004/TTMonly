@@ -48,6 +48,19 @@ async def stream_empathy_reply(user_input: str, model_path: str, turn: int = 0) 
     user_input = user_input.strip()
     print(f"🟡 사용자 입력 수신: '{user_input}' (턴 {turn})", flush=True)
 
+    # ✅ 첫 턴: 인삿말 및 이름 묻기
+    if turn == 0:
+        greeting = "안녕하세요. 만나서 반가워요. 혹시 제가 뭐라고 불러드리면 좋을까요?"
+        yield greeting.encode("utf-8")
+        yield b"\n---END_STAGE---\n" + json.dumps({
+            "next_stage": "empathy",
+            "response": greeting,
+            "turn": 1,
+            "intro_shown": True,
+            "history": [user_input, greeting]
+        }, ensure_ascii=False).encode("utf-8")
+        return
+
     if len(user_input) < 3:
         fallback = "지금 어떤 마음이신지 조금 더 이야기해 주실 수 있으실까요?"
         yield fallback.encode("utf-8")
@@ -84,15 +97,14 @@ async def stream_empathy_reply(user_input: str, model_path: str, turn: int = 0) 
             reply = "괜찮아요. 지금 이 순간 어떤 마음이신지 천천히 들려주세요."
 
         yield b"\n---END_STAGE---\n" + json.dumps({
-            "next_stage": "mi" if turn >= 4 else "empathy",
+            "next_stage": "mi" if turn >= 2 else "empathy",
             "response": reply,
-            "turn": 0 if turn >= 4 else turn + 1,
+            "turn": 0 if turn >= 2 else turn + 1,
             "intro_shown": True,
             "history": [user_input, reply]
         }, ensure_ascii=False).encode("utf-8")
 
     except Exception as e:
-        # 예외 내용은 서버 로그에만 출력, 사용자에겐 자연스러운 문장만 제공
         print(f"⚠️ stream_empathy_reply 예외 발생: {e}", flush=True)
         fallback = "죄송합니다. 잠시 오류가 있었어요. 다시 말씀해 주실 수 있을까요?"
         yield fallback.encode("utf-8")

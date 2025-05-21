@@ -46,14 +46,30 @@ async def stream_cbt1_reply(state: AgentState, model_path: str) -> AsyncGenerato
     user_input = state.question.strip()
     history = state.history or []
 
+    # ✅ 인트로 출력: 처음 진입 시
+    if not state.intro_shown:
+        intro = "지금부터 자동적으로 떠오르는 생각을 함께 살펴볼게요. 편하게 떠오른 생각을 말씀해 주세요."
+        yield intro.encode("utf-8")
+        yield b"\n---END_STAGE---\n" + json.dumps({
+            "next_stage": "cbt1",
+            "turn": 0,
+            "response": intro,
+            "question": "",
+            "intro_shown": True,
+            "history": history + [intro]
+        }, ensure_ascii=False).encode("utf-8")
+        return
+
+    # ✅ 입력 미비 시
     if not user_input:
-        fallback = "떠오른 생각이나 감정이 있다면 부담 없이 이야기해 주세요."
+        fallback = "떠오른 생각이나 감정이 있다면 편하게 이야기해 주세요."
         yield fallback.encode("utf-8")
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": "cbt1",
             "turn": state.turn,
             "response": fallback,
-            "intro_shown": state.intro_shown,
+            "question": "",
+            "intro_shown": True,
             "history": history
         }, ensure_ascii=False).encode("utf-8")
         return
@@ -61,7 +77,6 @@ async def stream_cbt1_reply(state: AgentState, model_path: str) -> AsyncGenerato
     try:
         llm = load_cbt1_model(model_path)
 
-        # ✅ 질문 다양화 강조된 system prompt
         system_prompt = (
             "너는 따뜻하고 이성적인 소크라테스 상담자야. 사용자의 자동사고를 탐색해야 해.\n"
             "- 매번 새로운 시각으로 질문을 던져야 해.\n"
@@ -77,18 +92,13 @@ async def stream_cbt1_reply(state: AgentState, model_path: str) -> AsyncGenerato
         )
 
         messages = [{"role": "system", "content": system_prompt}]
-
-        # ✅ history를 중복 없이 쌓기
         for i in range(0, len(history), 2):
             if i + 1 < len(history):
                 messages.append({"role": "user", "content": history[i]})
                 messages.append({"role": "assistant", "content": history[i + 1]})
-
         messages.append({"role": "user", "content": user_input})
 
-        full_response = ""
-        first_token_sent = False
-
+        full_response, first_token_sent = "", False
         for chunk in llm.create_chat_completion(messages=messages, stream=True):
             token = chunk["choices"][0]["delta"].get("content", "")
             if token:
@@ -99,13 +109,15 @@ async def stream_cbt1_reply(state: AgentState, model_path: str) -> AsyncGenerato
                 yield token.encode("utf-8")
 
         reply = full_response.strip()
+        if not reply:
+            reply = "네, 그 생각을 더 자세히 들여다볼 수 있을까요?"
+
+        # ✅ 턴 증가 및 전환 처리
         next_turn = state.turn + 1
         next_stage = "cbt2" if next_turn >= 5 else "cbt1"
-
         if next_stage == "cbt2":
-            reply += "\n\n📘 사고 탐색이 잘 마무리되었어요. 이제 생각을 재구성해보는 CBT2 단계로 넘어갈게요."
+            reply += "\n\n👍 잘하셨어요. 다음 단계에서는 떠오른 생각을 재구성해보는 연습을 해볼게요."
 
-        # ✅ history 중복 방지
         updated_history = history.copy()
         if not (len(updated_history) >= 2 and updated_history[-2] == user_input and updated_history[-1] == reply):
             updated_history.extend([user_input, reply])
@@ -115,18 +127,20 @@ async def stream_cbt1_reply(state: AgentState, model_path: str) -> AsyncGenerato
             "turn": 0 if next_stage == "cbt2" else next_turn,
             "response": reply,
             "question": "",
-            "intro_shown": state.intro_shown,
+            "intro_shown": True,
             "history": updated_history
         }, ensure_ascii=False).encode("utf-8")
 
     except Exception as e:
-        err = f"⚠️ 오류 발생: {e}"
-        print(err, flush=True)
-        yield err.encode("utf-8")
+        err_msg = f"⚠️ 오류 발생: {e}"
+        print(err_msg, flush=True)
+        fallback = "죄송해요. 다시 말씀해 주시겠어요?"
+        yield fallback.encode("utf-8")
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": "cbt1",
             "turn": state.turn,
-            "response": "죄송합니다. 오류가 발생했어요. 다시 말씀해 주시겠어요?",
-            "intro_shown": state.intro_shown,
+            "response": fallback,
+            "question": "",
+            "intro_shown": True,
             "history": history
         }, ensure_ascii=False).encode("utf-8")

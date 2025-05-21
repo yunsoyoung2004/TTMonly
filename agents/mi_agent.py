@@ -53,8 +53,21 @@ def get_mi_prompt() -> str:
 
 async def stream_mi_reply(state: AgentState, model_path: str) -> AsyncGenerator[bytes, None]:
     user_input = state.question.strip()
+
+    # ✅ 인트로 출력 (초기 진입 시)
+    if not state.intro_shown:
+        intro = "우선 지금 이 자리에 와주셔서 감사합니다. 어떤 이야기를 나누고 싶으신가요?"
+        yield intro.encode("utf-8")
+        yield b"\n---END_STAGE---\n" + json.dumps({
+            "next_stage": "mi",
+            "response": intro,
+            "history": state.history + [intro],
+            "intro_shown": True
+        }, ensure_ascii=False).encode("utf-8")
+        return
+
     if not user_input or len(user_input) < 2:
-        fallback = "조금 더 자세히 말씀해 주실 수 있을까요?"
+        fallback = "조금 더 구체적으로 말씀해주실 수 있을까요?"
         yield fallback.encode("utf-8")
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": "mi",
@@ -83,9 +96,9 @@ async def stream_mi_reply(state: AgentState, model_path: str) -> AsyncGenerator[
                     first_token_sent = True
                 yield token.encode("utf-8")
 
-        reply = full_response.strip() or "괜찮아요. 지금 마음을 천천히 들려주셔도 괜찮습니다."
+        reply = full_response.strip() or "괜찮아요. 마음을 천천히 들려주셔도 괜찮습니다."
 
-        # ✅ [추가] 5턴 이상이면 CBT1으로 전환
+        # ✅ 5턴 이상이면 CBT1으로 전환
         turn_count = len(state.history) // 2
         next_stage = "cbt1" if turn_count + 1 >= 5 else "mi"
 
@@ -98,7 +111,7 @@ async def stream_mi_reply(state: AgentState, model_path: str) -> AsyncGenerator[
 
     except Exception as e:
         print(f"⚠️ 오류 발생: {e}", flush=True)
-        fallback = "죄송합니다. 다시 한 번 이야기해 주시겠어요?"
+        fallback = "죄송합니다. 잠시 문제가 발생했어요. 다시 한 번 말씀해 주시겠어요?"
         yield fallback.encode("utf-8")
         yield b"\n---END_STAGE---\n" + json.dumps({
             "next_stage": "mi",
